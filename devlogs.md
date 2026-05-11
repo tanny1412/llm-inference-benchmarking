@@ -1,0 +1,43 @@
+# Dev Logs — LLM Inference Benchmarking
+
+---
+
+## Stage 1 — Naive HF Baseline
+
+### Questions & Doubts
+
+**Q: Why load the model on GPU and not CPU?**
+Mistral 7B in FP16 = ~14GB. CPU doesn't have that memory headroom and has no tensor cores — matrix multiplications that take milliseconds on GPU take seconds on CPU.
+
+**Q: Why FP16 and not FP32?**
+FP32 = 4 bytes/weight → ~28GB for 7B params → OOM on most single GPUs. FP16 = 2 bytes/weight → ~14GB → fits on A100 40GB. FP16 is the standard inference baseline before quantization.
+
+**Q: Why `AutoModelForCausalLM` and not `AutoModel`?**
+`AutoModel` is generic. `AutoModelForCausalLM` is specific to decoder-only causal language models (like Mistral) and gives us the `.generate()` method needed for text generation.
+
+**Q: Why declare `model = None` and `tokenizer = None` at module level?**
+Two reasons: (1) Python's `global` keyword requires the variable to exist at module scope before reassigning inside a function. (2) Both the lifespan loader and the `/generate` endpoint need to access them — they must be at module scope for sharing.
+
+**Q: Why `device_map="cuda"` instead of `.to("cuda")`?**
+`device_map` comes from the `accelerate` library and is smarter — it can split the model across multiple GPUs or CPU+GPU if needed. `.to("cuda")` blindly moves everything to one GPU and OOMs if it doesn't fit. That's why `accelerate` is in requirements.txt.
+
+**Q: What is `@asynccontextmanager` and why use it for lifespan?**
+`contextmanager` lets a function with a `yield` behave as a resource manager — before yield is setup, after yield is teardown. `async` is needed because FastAPI is an async framework. The decorator is essentially boilerplate FastAPI requires for lifespan — the real logic is just what's before and after the `yield`.
+
+**Q: Why is lifespan loading done once outside the endpoint and not inside?**
+Loading a 14GB model on every request would be catastrophically slow. Load once at startup, reuse across all requests. The `/generate` endpoint and lifespan both access the same module-level `model` and `tokenizer` objects.
+
+**Q: Why does `max_new_tokens=200` need to stay constant across all benchmark stages?**
+Every new token = one decode step. If Stage 1 generates 200 tokens and Stage 2 generates 500, you're not comparing the same workload — Stage 2 did more work. Same prompt + same `max_new_tokens` = fair comparison.
+
+**Q: Why is `accelerate` in requirements.txt?**
+HuggingFace uses it under the hood when `device_map` is passed to `from_pretrained`. Without it, `device_map="cuda"` fails.
+
+---
+
+## Key Decisions
+
+- Model: `mistralai/Mistral-7B-Instruct-v0.1` (instruction-tuned, not base — responds coherently without fine-tuning)
+- Precision: FP16 (`torch.float16`)
+- Server: FastAPI + uvicorn
+- Model loaded once at startup via FastAPI lifespan event

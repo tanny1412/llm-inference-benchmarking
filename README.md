@@ -101,10 +101,16 @@ Results saved to `results_<backend>_c<concurrency>_<timestamp>.json`
 | AWQ 4-bit | 10 | 1.773s | 1.816s | 899.53 | 5.62 | 19,342 MiB |
 | AWQ 4-bit | 50 | 3.793s | 3.844s | 2,157.86 | 13.31 | 19,566 MiB |
 | AWQ 4-bit | 100 | 6.485s | 6.489s | 2,511.52 | 15.41 | 19,636 MiB |
+| GPTQ 4-bit | 1 | 1.160s | 1.198s | 140.30 | 0.86 | 19,538 MiB |
+| GPTQ 4-bit | 10 | 1.986s | 2.013s | 807.18 | 5.02 | 19,540 MiB |
+| GPTQ 4-bit | 50 | 8.181s | 8.463s | 1,014.76 | 6.31 | 19,764 MiB |
+| GPTQ 4-bit | 100 | 9.341s | 9.587s | 1,718.31 | 10.57 | 19,764 MiB |
 
 **Stage 1 → Stage 2:** 80x throughput improvement at concurrency=100. HF flat-lines; vLLM scales. p50 latency at 100 concurrent users (6.2s) is only 20% worse than HF at 1 user (5.1s).
 
-**Stage 2 → Stage 3:** AWQ is 2.4x faster at low concurrency (single request: 117 vs 49 tokens/sec). 4-bit weights stream from HBM faster — decode is memory-bandwidth bound, so smaller weights = faster tokens. At concurrency=100, the gap closes: both backends approach the same compute ceiling and dequantization overhead erodes AWQ's bandwidth advantage.
+**Stage 2 → Stage 3:** AWQ is 2.4x faster at low concurrency (single request: 117 vs 49 tokens/sec). 4-bit weights stream from HBM faster — decode is memory-bandwidth bound, so smaller weights = faster tokens. At concurrency=100, the gap closes as both hit the same compute ceiling.
+
+**Stage 3 vs Stage 4 (AWQ vs GPTQ):** GPTQ edges AWQ at c=1 (140 vs 117 tok/s) but falls behind sharply at scale — at c=50, AWQ is 2x faster (2,157 vs 1,014 tok/s). vLLM's GPTQ kernel is not optimized for large batches (vLLM warns this at startup). AWQ's kernel scales; GPTQ's doesn't.
 
 ## Key Concepts
 

@@ -516,6 +516,38 @@ Result: 4-bit weights instead of 16-bit. Mistral 7B in FP16 = ~14GB VRAM. In AWQ
 
 ---
 
+## Benchmark Results — Stage 4 (GPTQ)
+
+| Concurrency | p50 latency | p99 latency | Tokens/sec | Req/sec | GPU Memory |
+|-------------|-------------|-------------|------------|---------|------------|
+| 1           | 1.160s      | 1.198s      | 140.30     | 0.86    | 19,538 MiB |
+| 10          | 1.986s      | 2.013s      | 807.18     | 5.02    | 19,540 MiB |
+| 50          | 8.181s      | 8.463s      | 1,014.76   | 6.31    | 19,764 MiB |
+| 100         | 9.341s      | 9.587s      | 1,718.31   | 10.57   | 19,764 MiB |
+
+**AWQ vs GPTQ — direct comparison:**
+
+| Concurrency | AWQ Tokens/sec | GPTQ Tokens/sec | Winner |
+|-------------|----------------|-----------------|--------|
+| 1           | 117.93         | 140.30          | GPTQ (+1.2x) |
+| 10          | 899.53         | 807.18          | AWQ (+1.1x) |
+| 50          | 2,157.86       | 1,014.76        | AWQ (+2.1x) |
+| 100         | 2,511.52       | 1,718.31        | AWQ (+1.5x) |
+
+**Why GPTQ wins at c=1:**
+
+At single-request, decode is memory-bandwidth bound. Both models are 4-bit and similar in weight size. GPTQ's kernel happens to stream weights slightly faster from HBM at low batch sizes — small kernel overhead, no batching complexity.
+
+**Why AWQ dominates from c=10 onwards:**
+
+vLLM's startup log said it explicitly: *"gptq quantization is not fully optimized yet. The speed can be slower than non-quantized models."* The GPTQ kernel in vLLM 0.6.6 is not built for large batches. As concurrency grows, the batch size grows, and GPTQ's kernel can't keep the tensor cores fed efficiently. AWQ's kernel scales better — at c=50, AWQ is 2.1x faster.
+
+The crossover point is between c=1 and c=10. Below that, GPTQ's simpler kernel wins. Above it, AWQ's batch-optimized kernel takes over.
+
+**Note:** vLLM detected that `gptq_marlin` (a more optimized GPTQ kernel for Ampere/Ada GPUs) could have been used but we forced `--quantization gptq` explicitly. `gptq_marlin` would likely close most of the gap at high concurrency — it's essentially GPTQ with the AWQ-style batched kernel underneath. We used plain `gptq` to establish the baseline comparison.
+
+---
+
 ## Key Decisions
 
 - Model: `mistralai/Mistral-7B-Instruct-v0.1` (instruction-tuned, not base — responds coherently without fine-tuning)

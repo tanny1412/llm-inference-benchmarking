@@ -676,6 +676,23 @@ Inference quantization  →  faster/cheaper serving, weights frozen
 QLoRA                   →  fine-tuning on consumer hardware, base frozen, adapters train
 ```
 
+**Does QLoRA hurt quality vs LoRA?**
+
+Yes, small quality degradation — but surprisingly minimal in practice.
+
+The theoretical concern: base model weights are 4-bit, so every forward pass during training has quantization error baked in. Gradients flowing into `B` and `A` are computed against a slightly imprecise base model. The adapters learn to compensate for a 4-bit approximation, not the original.
+
+Why it's not a big deal: the adapter's job is a coarse adjustment — shift the model's behavior in a specific direction. Quantization error is small and distributed. The adapter can absorb most of it because it's learning against a consistent (even if slightly imprecise) base. QLoRA's original paper showed the quality gap vs full LoRA is negligible on most benchmarks.
+
+QLoRA specifically uses **NF4 (normalized float 4)** — not standard INT4. NF4 is designed so that quantization levels are spaced to match the distribution of pretrained model weights (which are approximately normal/Gaussian). This minimizes quantization error for the specific value range that matters.
+
+Where you'd actually feel the quality gap:
+- Very sensitive tasks — complex reasoning, math
+- Very small `r` values — less adapter capacity to compensate
+- Aggressive quantization beyond 4-bit (3-bit, 2-bit)
+
+One-line: tiny quality cost from 4-bit base model imprecision, but NF4 minimizes it, and in practice the gap vs full LoRA is negligible for most fine-tuning tasks. The VRAM savings far outweigh the quality cost.
+
 ---
 
 ## Key Decisions

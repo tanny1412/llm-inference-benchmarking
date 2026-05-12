@@ -114,6 +114,8 @@ Marlin also beats AWQ (3,023 vs 2,511 tok/s at c=100). AWQ's apparent advantage 
 | GPTQ Marlin | 50 | 3.362s | 3.403s | 2,537.04 | 15.57 | 19,162 MiB |
 | GPTQ Marlin | 100 | 5.273s | 5.404s | 3,023.39 | 18.73 | 19,358 MiB |
 
+**Note on GPU Memory column:** For all vLLM backends, the ~19k MiB reading is not the model weight size — it is vLLM's pre-allocated VRAM pool (`gpu_memory_utilization=0.9` × 24GB ≈ 21.6GB reserved at startup, split between model weights and pre-allocated KV cache pages). The HF naive number (14,466 MiB) is the only honest weight-only measurement since HF loads weights and nothing else. Real weight footprints: FP16 ≈ 14GB, AWQ/GPTQ 4-bit ≈ 4GB. To isolate weight memory for vLLM stages you'd need to sample `nvidia-smi` right after server startup before any requests.
+
 **Throughput at concurrency=100 (highest load):**
 
 ```

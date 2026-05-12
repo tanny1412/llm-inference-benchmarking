@@ -11,11 +11,12 @@ PROMPT = "Explain the difference between machine learning and deep learning in d
 MODEL_NAMES = {
     "vllm": "mistralai/Mistral-7B-Instruct-v0.1",
     "awq": "TheBloke/Mistral-7B-Instruct-v0.1-AWQ",
+    "gptq": "TheBloke/Mistral-7B-Instruct-v0.1-GPTQ",
 }
 
 
 async def send_request(session, url, max_new_tokens, backend):
-    if backend in ("vllm", "awq"):
+    if backend in ("vllm", "awq", "gptq"):
         payload = {"model": MODEL_NAMES.get(backend, MODEL_NAMES["vllm"]), "prompt": PROMPT, "max_tokens": max_new_tokens}
     else:
         payload = {"prompt": PROMPT, "max_new_tokens": max_new_tokens}
@@ -25,7 +26,7 @@ async def send_request(session, url, max_new_tokens, backend):
         result = await resp.json()
     latency = time.perf_counter() - start
 
-    if backend in ("vllm", "awq"):
+    if backend in ("vllm", "awq", "gptq"):
         tokens = len(result["choices"][0]["text"].split())
     else:
         tokens = len(result.get("response", "").split())

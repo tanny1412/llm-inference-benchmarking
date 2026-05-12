@@ -67,8 +67,7 @@ vllm serve TheBloke/Mistral-7B-Instruct-v0.1-AWQ --host 0.0.0.0 --port 8000 --qu
 
 **Stage 4 — GPTQ:**
 ```bash
-export HF_HOME=/workspace/hf-cache
-uvicorn app_gptq:app --host 0.0.0.0 --port 8000
+vllm serve TheBloke/Mistral-7B-Instruct-v0.1-GPTQ --host 0.0.0.0 --port 8000 --quantization gptq --dtype float16 --download-dir /workspace/hf-cache/hub
 ```
 
 Note: always use `--download-dir /workspace/hf-cache/hub` (not `/workspace/hf-cache`) — HF puts models in a `hub/` subdirectory, vLLM doesn't know this unless told explicitly.

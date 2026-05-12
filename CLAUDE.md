@@ -29,10 +29,9 @@ README.md        # project overview
 
 ## Current Status
 
-- [x] Stage 1 server (`app_hf.py`) — HF model loaded, FastAPI endpoint working
-- [x] Benchmark harness (`benchmark.py`) — asyncio + aiohttp, p50/p99, tokens/sec, req/sec
-- [ ] Add threading.Lock to `app_hf.py` — model.generate() is not thread-safe
-- [ ] Stage 2 — vLLM server
+- [x] Stage 1 server (`app_hf.py`) — HF model loaded, FastAPI endpoint working, threading.Lock added
+- [x] Benchmark harness (`benchmark.py`) — asyncio + aiohttp, p50/p99, tokens/sec, req/sec, GPU memory
+- [x] Stage 2 — vLLM via `vllm serve`, benchmarked at c=1,10,50,100
 - [ ] Stage 3 — AWQ quantization
 - [ ] Results tables
 
@@ -46,12 +45,20 @@ README.md        # project overview
 
 ## RunPod Setup (every pod restart)
 
+**Stage 1 — HF:**
 ```bash
 cd /workspace/llm-inference-benchmarking
 git pull
 export HF_HOME=/workspace/hf-cache
 uvicorn app_hf:app --host 0.0.0.0 --port 8000
 ```
+
+**Stage 2 — vLLM:**
+```bash
+vllm serve mistralai/Mistral-7B-Instruct-v0.1 --host 0.0.0.0 --port 8000 --tokenizer-mode mistral --download-dir /workspace/hf-cache/hub
+```
+
+Note: always use `--download-dir /workspace/hf-cache/hub` (not `/workspace/hf-cache`) — HF puts models in a `hub/` subdirectory, vLLM doesn't know this unless told explicitly.
 
 SSH config (update IP/port after each restart):
 ```

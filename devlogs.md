@@ -276,6 +276,15 @@ The earlier "identical" numbers (34 tokens/sec) were from the broken AsyncLLMEng
 | vLLM | 50 | 4.747s | 1714.23 | 10.56 |
 | vLLM | 100 | 6.241s | 2596.58 | 16.01 |
 
+**GPU Memory comparison:**
+
+| Stage | GPU Memory |
+|-------|------------|
+| HF FP16 | 14,466 MiB |
+| vLLM FP16 | 19,472 MiB |
+
+vLLM uses more memory than HF because it pre-allocates KV cache pages upfront (`gpu_memory_utilization=0.9` × 24GB = ~21GB total, model takes 14GB, rest goes to pre-allocated KV cache). HF only allocates memory per request on demand.
+
 **Key takeaways:**
 - HF flat-lines: adding concurrency kills latency, throughput never improves
 - vLLM scales: 100 concurrent users, 80x throughput improvement (32 → 2596 tokens/sec), 84x more req/sec (0.19 → 16)
@@ -336,6 +345,56 @@ Python only knows a variable exists if it was assigned before you use it. If the
 - **Scheduler** — manages which requests run each forward pass, preempts when memory is tight. With one request, every decision is trivial — run the one request, nothing to preempt, nothing to prioritize.
 
 All three are solutions to problems that only appear under concurrent load. Single request = no concurrency problems = no benefit from any of these systems.
+
+---
+
+## nvidia-smi — Empty Processes Section in Containers
+
+In RunPod (containerized environment), the Processes section in `nvidia-smi` always appears empty even when the GPU is actively running. This is a permission restriction — the container can't see OS-level process info.
+
+The GPU utilization metrics are still accurate and reliable:
+- **GPU-Util %** — compute utilization
+- **Memory-Usage MiB** — VRAM used
+- **Pwr:Usage/Cap W** — power draw
+
+If these numbers are non-zero, the GPU is working. The empty process list is not an error.
+
+---
+
+## Bug: Duplicate Model Download — HF Cache Path Mismatch
+
+Two different tools use different cache path conventions:
+
+- `app_hf.py` with `HF_HOME=/workspace/hf-cache` → HuggingFace puts model at:
+  `/workspace/hf-cache/hub/models--mistralai--Mistral-7B-Instruct-v0.1/`
+
+- `vllm serve --download-dir /workspace/hf-cache` → vLLM looks for model at:
+  `/workspace/hf-cache/models--mistralai--Mistral-7B-Instruct-v0.1/`
+
+vLLM didn't find the model at its expected path, started downloading a second copy, hit disk quota partway through, and left an incomplete ~5GB copy wasting space.
+
+**Fix:** Delete the incomplete copy and point vLLM to the correct hub/ path:
+```bash
+rm -rf /workspace/hf-cache/models--mistralai--Mistral-7B-Instruct-v0.1
+vllm serve mistralai/Mistral-7B-Instruct-v0.1 --host 0.0.0.0 --port 8000 --tokenizer-mode mistral --download-dir /workspace/hf-cache/hub
+```
+
+**General lesson:** When using multiple tools with the same model, always verify they're reading from the same cache location — otherwise you end up with duplicate downloads and wasted disk space.
+
+---
+
+## Stage 3 — AWQ Quantization
+
+**What AWQ does:**
+
+AWQ (Activation-aware Weight Quantization) looks at which weights actually matter by analyzing activation magnitudes during calibration. Weights that get multiplied by large activations are kept at higher precision — they have the most impact on output quality. Weights that barely affect the output get quantized aggressively to 4-bit.
+
+Result: 4-bit weights instead of 16-bit. Mistral 7B in FP16 = ~14GB VRAM. In AWQ 4-bit = ~4GB VRAM. Same model, 3.5x less memory.
+
+**Why this matters for serving:**
+- More VRAM headroom → larger KV cache → more concurrent sequences fit in memory
+- 4-bit weights are smaller → faster to stream from HBM during decode → higher tokens/sec
+- Minimal quality loss because AWQ protects the weights that matter most
 
 ---
 

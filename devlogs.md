@@ -609,6 +609,44 @@ The difference between GPTQ and GPTQ Marlin is not the algorithm. Not the weight
 
 ---
 
+## Why Marlin Has Less Stall Between Dequantization and Tensor Cores
+
+Both AWQ and GPTQ Marlin dequantize. Every quantized kernel does — tensor cores only operate in float16, so 4-bit weights must be converted before the matmul. The difference is how efficiently that dequantization is fused with the matmul.
+
+**Naive / poorly optimized kernel:**
+
+```
+HBM → shared memory (4-bit weights land here)
+         ↓
+       wait... dequantize 4-bit → float16
+         ↓
+       wait... move float16 to tensor core registers
+         ↓
+       tensor cores run
+```
+
+Each arrow is a stall. Tensor cores sit idle while dequantization finishes, then sit idle again while data moves to registers.
+
+**Marlin kernel — double buffering:**
+
+```
+HBM → shared memory (4-bit weights)
+         ↓ (overlap)
+       dequantize tile N          ← runs while tensor cores process tile N-1
+       tensor cores run tile N-1
+         ↓ (overlap)
+       dequantize tile N+1        ← runs while tensor cores process tile N
+       tensor cores run tile N
+```
+
+While tensor cores are consuming one tile of weights, the next tile is already being dequantized in shared memory. By the time tensor cores finish tile N, tile N+1 is ready. No stall.
+
+The technique is called **software pipelining** — split work into stages and keep all stages busy simultaneously. Tensor cores never wait on dequantization because dequantization is always one step ahead.
+
+Marlin beats AWQ not because it skips dequantization — it doesn't — but because it hides the dequantization latency behind compute. The naive kernel exposes it. That is a purely kernel engineering distinction, not an algorithm distinction.
+
+---
+
 ## Key Decisions
 
 - Model: `mistralai/Mistral-7B-Instruct-v0.1` (instruction-tuned, not base — responds coherently without fine-tuning)

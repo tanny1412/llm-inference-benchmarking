@@ -7,25 +7,35 @@ import statistics
 from datetime import datetime
 
 PROMPT = "Explain the difference between machine learning and deep learning in detail."
+MODEL_NAME = "mistralai/Mistral-7B-Instruct-v0.1"
 
 
-async def send_request(session, url, max_new_tokens):
-    payload = {"prompt": PROMPT, "max_new_tokens": max_new_tokens}
+async def send_request(session, url, max_new_tokens, backend):
+    if backend == "vllm":
+        payload = {"model": MODEL_NAME, "prompt": PROMPT, "max_tokens": max_new_tokens}
+    else:
+        payload = {"prompt": PROMPT, "max_new_tokens": max_new_tokens}
+
     start = time.perf_counter()
     async with session.post(url, json=payload) as resp:
         result = await resp.json()
     latency = time.perf_counter() - start
-    tokens = len(result.get("response", "").split())
+
+    if backend == "vllm":
+        tokens = len(result["choices"][0]["text"].split())
+    else:
+        tokens = len(result.get("response", "").split())
+
     return latency, tokens
 
 
-async def run_benchmark(url, concurrency, num_requests, max_new_tokens):
-    
+async def run_benchmark(url, concurrency, num_requests, max_new_tokens, backend):
+
     semaphore = asyncio.Semaphore(concurrency)
 
     async def bounded_request(session):
         async with semaphore:
-            return await send_request(session, url, max_new_tokens)
+            return await send_request(session, url, max_new_tokens, backend)
 
     async with aiohttp.ClientSession() as session:
         start_time = time.perf_counter()
@@ -62,7 +72,10 @@ def main():
 
     print(f"\nBenchmarking: backend={args.backend}, concurrency={args.concurrency}, num_requests={args.num_requests}, max_new_tokens={args.max_new_tokens}")
 
-    results = asyncio.run(run_benchmark(args.url, args.concurrency, args.num_requests, args.max_new_tokens))
+    if args.backend == "vllm":
+        args.url = "http://localhost:8000/v1/completions"
+
+    results = asyncio.run(run_benchmark(args.url, args.concurrency, args.num_requests, args.max_new_tokens, args.backend))
 
     print(f"\n--- Results ---")
     print(f"Latency p50:   {results['latency_p50_s']}s")

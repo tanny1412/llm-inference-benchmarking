@@ -203,6 +203,55 @@ We kept the same FastAPI wrapper across backends to ensure apples-to-apples benc
 
 ---
 
+## Benchmark Results — Stage 2 (vLLM)
+
+| Concurrency | p50 latency | p99 latency | Tokens/sec | Req/sec |
+|-------------|-------------|-------------|------------|---------|
+| 1           | 4.986s      | 5.368s      | 34.11      | 0.20    |
+
+**Concurrency=1 comparison — HF vs vLLM:**
+
+| | HF | vLLM |
+|--|--|--|
+| p50 | 5.148s | 4.986s |
+| Tokens/sec | 32.55 | 34.11 |
+| Req/sec | 0.19 | 0.20 |
+
+Almost identical — because vLLM's power is handling multiple concurrent requests. With concurrency=1 there's nothing to batch. The scheduler, continuous batching, PagedAttention — none of it matters with a single request in the queue. It's just one forward pass, same as HF.
+
+The real improvement shows at higher concurrency (10, 50, 100).
+
+**Bug: LLM (sync) vs AsyncLLMEngine — why vLLM showed no improvement at concurrency=10:**
+
+First attempt used `LLM` (synchronous class). Each FastAPI request called `llm.generate([prompt], params)` independently with one prompt. vLLM never saw 10 requests at once — it saw 10 separate `generate()` calls one after another. No batching happened. Results were identical to naive HF.
+
+Results with sync `LLM` at concurrency=10:
+- p50: 49.969s (exactly 10× the concurrency=1 latency — pure sequential queuing)
+- Tokens/sec: 34.18 (identical to concurrency=1 — no throughput gain)
+- Req/sec: 0.20 (identical — same ceiling as HF)
+
+**Fix: switch to `AsyncLLMEngine`**
+
+With `LLM` (sync): FastAPI runs endpoint in a thread pool. 10 threads each independently call `llm.generate()` and block. Engine never sees them together.
+
+With `AsyncLLMEngine` (async): FastAPI runs endpoint in the event loop. 10 coroutines each call `await engine.generate()` and yield control back. The engine collects all pending requests and batches them together in one forward pass.
+
+`AsyncLLMEngine.generate()` is a streaming API — it yields tokens as they're generated. The endpoint consumes the stream and returns the final output.
+
+Key change: endpoint becomes `async def`, uses `await engine.generate()`, collects streamed output.
+
+---
+
+**Why each vLLM feature does nothing at concurrency=1:**
+
+- **Continuous batching** — fills freed batch slots with waiting requests. With one request, there are no waiting requests. Nothing to batch.
+- **PagedAttention** — eliminates KV cache fragmentation when multiple sequences compete for memory. With one request, there's no competition. Fragmentation isn't a problem when only one sequence uses the cache.
+- **Scheduler** — manages which requests run each forward pass, preempts when memory is tight. With one request, every decision is trivial — run the one request, nothing to preempt, nothing to prioritize.
+
+All three are solutions to problems that only appear under concurrent load. Single request = no concurrency problems = no benefit from any of these systems.
+
+---
+
 ## Key Decisions
 
 - Model: `mistralai/Mistral-7B-Instruct-v0.1` (instruction-tuned, not base — responds coherently without fine-tuning)

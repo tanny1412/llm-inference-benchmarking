@@ -1,17 +1,20 @@
 from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from pydantic import BaseModel
-from vllm import LLM, SamplingParams
+from vllm import AsyncLLMEngine, SamplingParams
+from vllm.engine.arg_utils import AsyncEngineArgs
+import uuid
 
 MODEL_NAME = "mistralai/Mistral-7B-Instruct-v0.1"
 
-llm = None
+engine = None
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global llm
-    llm = LLM(model=MODEL_NAME)
+    global engine
+    engine_args = AsyncEngineArgs(model=MODEL_NAME)
+    engine = AsyncLLMEngine.from_engine_args(engine_args)
     yield
 
 
@@ -24,8 +27,10 @@ class GenerateRequest(BaseModel):
 
 
 @app.post("/generate")
-def generate(request: GenerateRequest):
+async def generate(request: GenerateRequest):
     params = SamplingParams(max_tokens=request.max_new_tokens)
-    outputs = llm.generate([request.prompt], params)
-    response = outputs[0].outputs[0].text
+    request_id = str(uuid.uuid4())
+    async for output in engine.generate(request.prompt, params, request_id):
+        final_output = output
+    response = final_output.outputs[0].text
     return {"response": response}

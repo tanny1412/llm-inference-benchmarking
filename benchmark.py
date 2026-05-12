@@ -12,11 +12,12 @@ MODEL_NAMES = {
     "vllm": "mistralai/Mistral-7B-Instruct-v0.1",
     "awq": "TheBloke/Mistral-7B-Instruct-v0.1-AWQ",
     "gptq": "TheBloke/Mistral-7B-Instruct-v0.1-GPTQ",
+    "gptq_marlin": "TheBloke/Mistral-7B-Instruct-v0.1-GPTQ",
 }
 
 
 async def send_request(session, url, max_new_tokens, backend):
-    if backend in ("vllm", "awq", "gptq"):
+    if backend in ("vllm", "awq", "gptq", "gptq_marlin"):
         payload = {"model": MODEL_NAMES.get(backend, MODEL_NAMES["vllm"]), "prompt": PROMPT, "max_tokens": max_new_tokens}
     else:
         payload = {"prompt": PROMPT, "max_new_tokens": max_new_tokens}
@@ -26,7 +27,7 @@ async def send_request(session, url, max_new_tokens, backend):
         result = await resp.json()
     latency = time.perf_counter() - start
 
-    if backend in ("vllm", "awq", "gptq"):
+    if backend in ("vllm", "awq", "gptq", "gptq_marlin"):
         tokens = len(result["choices"][0]["text"].split())
     else:
         tokens = len(result.get("response", "").split())
@@ -77,7 +78,7 @@ def get_gpu_memory_mib():
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--url", default="http://localhost:8000/generate")
-    parser.add_argument("--backend", default="hf", help="hf | vllm | awq | gptq")
+    parser.add_argument("--backend", default="hf", help="hf | vllm | awq | gptq | gptq_marlin")
     parser.add_argument("--concurrency", type=int, default=10)
     parser.add_argument("--num_requests", type=int, default=50)
     parser.add_argument("--max_new_tokens", type=int, default=200)

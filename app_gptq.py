@@ -18,6 +18,7 @@ async def lifespan(app: FastAPI):
         dtype="float16",
         gpu_memory_utilization=0.9,
         max_num_seqs=256,
+        max_model_len=8192,
         max_num_batched_tokens=8192,
     )
     engine = AsyncLLMEngine.from_engine_args(engine_args)

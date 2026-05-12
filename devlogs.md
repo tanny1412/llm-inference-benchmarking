@@ -117,6 +117,92 @@ Host runpod
 
 ---
 
+## Benchmark Results — Stage 1 (Naive HF)
+
+| Concurrency | p50 latency | p99 latency | Tokens/sec | Req/sec |
+|-------------|-------------|-------------|------------|---------|
+| 1           | 5.148s      | 5.148s      | 32.55      | 0.19    |
+| 5           | 25.792s     | 25.792s     | 32.76      | 0.19    |
+
+**Why tokens/sec and req/sec stay flat as concurrency increases:**
+
+With `threading.Lock()`, the GPU runs exactly one request at a time regardless of the concurrency setting. The semaphore in benchmark.py lets 5 requests start — but 4 immediately block on the lock. The GPU never sees 5 parallel requests. It sees a sequential queue.
+
+- `tokens_per_sec = total_tokens / wall_time` — wall time and tokens both grow proportionally → ratio constant
+- `req/sec = num_requests / wall_time` — same reason → ratio constant
+
+Only p50 latency explodes: each user now waits for everyone ahead of them in the queue. At concurrency=5, p50 went from 5.1s → 25.8s (≈5x), which is exactly what you'd expect from a perfect queue with sequential execution.
+
+**The lesson:** The naive server cannot scale. Adding concurrent users increases queue wait time, but does nothing to throughput. It's a single-lane road — more cars don't make the lane faster, they just make the queue longer. This is exactly what vLLM fixes with continuous batching.
+
+---
+
+## vLLM — How Batching Works
+
+**Why naive HF can't batch:** The threading.Lock() makes requests sequential. Removing the lock causes CUDA crashes because PyTorch model inference is not thread-safe.
+
+**What vLLM does instead — batching at the matmul level:**
+
+Multiple requests are stacked into a single input matrix before the forward pass:
+
+```
+[seq_len_1, d_model]
+[seq_len_2, d_model]   →  [total_tokens, d_model]
+[seq_len_3, d_model]
+```
+
+This becomes one big matrix multiply: `[total_tokens, d_model] × W`. GPUs are designed to do large matmuls efficiently — tensor cores stay saturated. One big matmul is much faster than 10 small sequential ones.
+
+**Why KV caches don't contaminate each other:**
+
+The weight matrix `W` is shared across all requests (same model). The batched matmul only uses `W` — it doesn't touch any KV cache.
+
+The KV cache is only involved during the attention step, which happens after the projections. Attention is computed independently per sequence. Each token carries metadata about which sequence it belongs to, and vLLM's scheduler maintains a **block table** per sequence: a mapping from logical page index → physical page in GPU memory (PagedAttention).
+
+So during attention:
+- Token from request A → look up request A's block table → fetch request A's K/V pages only
+- Token from request B → look up request B's block table → fetch request B's K/V pages only
+
+**Mental model:**
+```
+Batch of tokens → big matmul with W (shared weights, no KV cache)
+                         ↓
+             Split back into per-request sequences
+                         ↓
+             Attention computed independently per request
+             (each using only its own KV cache via block table)
+```
+
+Batching = shared matmul. Isolation = per-request block tables.
+
+---
+
+## Why We Keep the Same FastAPI Wrapper Across All Stages
+
+`benchmark.py` hits `POST /generate` with `{"prompt": ..., "max_new_tokens": ...}` for every backend. vLLM's built-in server exposes OpenAI-compatible endpoints (`/v1/completions`) — different format, which would require changing the benchmark script per stage.
+
+Same FastAPI wrapper → same benchmark script → fair comparison.
+
+**The general principle: control everything except the variable you're testing.**
+
+```
+same API
+same request format
+same benchmark script
+same hardware
+same workload
+same FastAPI layer
+
+ONLY inference engine changes
+```
+
+If numbers improve, you can confidently say the improvement came from vLLM itself — not from a different server, endpoint, networking stack, or serialization format.
+
+**One-line interview answer:**
+We kept the same FastAPI wrapper across backends to ensure apples-to-apples benchmarking and isolate inference engine performance differences.
+
+---
+
 ## Key Decisions
 
 - Model: `mistralai/Mistral-7B-Instruct-v0.1` (instruction-tuned, not base — responds coherently without fine-tuning)

@@ -3,11 +3,13 @@ from fastapi import FastAPI
 from pydantic import BaseModel
 from transformers import AutoTokenizer, AutoModelForCausalLM
 import torch
+import threading
 
 MODEL_NAME = "mistralai/Mistral-7B-Instruct-v0.1"
 
 model = None
 tokenizer = None
+model_lock = threading.Lock()
 
 
 @asynccontextmanager
@@ -32,7 +34,8 @@ class GenerateRequest(BaseModel):
 
 @app.post("/generate")
 def generate(request: GenerateRequest):
-    inputs = tokenizer(request.prompt, return_tensors="pt").to("cuda")
-    outputs = model.generate(**inputs, max_new_tokens=request.max_new_tokens)
-    response = tokenizer.decode(outputs[0], skip_special_tokens=True)
+    with model_lock:
+        inputs = tokenizer(request.prompt, return_tensors="pt").to("cuda")
+        outputs = model.generate(**inputs, max_new_tokens=request.max_new_tokens)
+        response = tokenizer.decode(outputs[0], skip_special_tokens=True)
     return {"response": response}

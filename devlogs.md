@@ -88,6 +88,20 @@ Host runpod
 
 ---
 
+## Concurrency Bug — Naive HF Server
+
+**Bug:** Running benchmark with concurrency > 1 causes `CUDA error: device-side assert triggered`
+
+**Why:** FastAPI runs synchronous `def` endpoints in a thread pool. With concurrency=5, five threads simultaneously call `model.generate()` on the same PyTorch model. PyTorch model inference is NOT thread-safe — concurrent GPU operations corrupt each other's state.
+
+**What this reveals:** This is the fundamental problem with naive HF serving. No request queuing, no concurrency control at the model level. The model can only safely handle one request at a time.
+
+**Fix:** Add a `threading.Lock()` so only one request can use the model at a time — making the sequential behavior explicit and safe.
+
+**Key lesson:** This is exactly WHY vLLM exists. vLLM handles concurrency properly with a scheduler that queues requests and batches them efficiently. Naive HF serving can't do this safely.
+
+---
+
 ## Bugs & Fixes
 
 **Bug 1: `transformers 5.8.0` incompatible with `torch 2.4.0` on RunPod**

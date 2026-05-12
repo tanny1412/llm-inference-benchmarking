@@ -2,35 +2,89 @@
 
 An end-to-end LLM inference benchmarking project comparing naive HuggingFace serving, vLLM with PagedAttention and continuous batching, and AWQ 4-bit quantization — measuring throughput, latency, and GPU memory across concurrency levels.
 
-## Stages
+## Project Story
 
-| Stage | Backend | Precision |
-|-------|---------|-----------|
-| 1 | Naive HuggingFace + FastAPI | FP16 |
-| 2 | vLLM | FP16 |
-| 3 | vLLM + AWQ | 4-bit |
+Each stage isolates one bottleneck and fixes it:
+
+| Stage | Server | Precision | What it shows |
+|-------|--------|-----------|---------------|
+| 1 | Naive HuggingFace + FastAPI | FP16 | Baseline — naive serving limitations, sequential request handling |
+| 2 | vLLM | FP16 | Runtime optimization — continuous batching, PagedAttention, concurrency scaling |
+| 3 | vLLM + AWQ | 4-bit | Memory optimization — quantization effect on VRAM, throughput, quality |
 
 ## Model
 
-`mistralai/Mistral-7B-Instruct-v0.1`
+`mistralai/Mistral-7B-Instruct-v0.1` — decoder-only transformer with GQA and SWA, instruction-tuned
 
 ## Metrics
 
-- TTFT (Time To First Token) — p50 and p99
-- Throughput (tokens/sec)
-- GPU memory usage
-- Concurrency scaling
+| Metric | What it measures |
+|--------|-----------------|
+| Latency p50 (s) | Typical user wait time |
+| Latency p99 (s) | Worst-case user wait time |
+| Tokens/sec | Model generation speed |
+| Requests/sec | Serving throughput |
+| GPU memory (MiB) | VRAM usage |
 
-## Setup
+## Benchmark Matrix
+
+| Backend | Precision | Concurrency |
+|---------|-----------|-------------|
+| HF naive | FP16 | 1, 5, 10 |
+| vLLM | FP16 | 1, 10, 50, 100 |
+| vLLM + AWQ | 4-bit | 1, 10, 50, 100 |
+
+## File Structure
+
+```
+app_hf.py        # Stage 1 — naive HuggingFace + FastAPI server
+app_vllm.py      # Stage 2 — vLLM server
+app_awq.py       # Stage 3 — vLLM + AWQ quantized server
+benchmark.py     # benchmark harness (same for all stages)
+requirements.txt
+devlogs.md       # detailed dev notes, bugs, observations
+```
+
+## Setup (RunPod)
 
 ```bash
-python -m venv venv
-source venv/bin/activate
+git clone https://github.com/tanny1412/llm-inference-benchmarking.git
+cd llm-inference-benchmarking
 pip install -r requirements.txt
+export HF_HOME=/workspace/hf-cache
 ```
 
-## Run
+## Running Each Stage
+
+**Stage 1 — HF Baseline:**
+```bash
+uvicorn app_hf:app --host 0.0.0.0 --port 8000
+```
+
+**Stage 2 — vLLM:**
+```bash
+uvicorn app_vllm:app --host 0.0.0.0 --port 8000
+```
+
+**Stage 3 — AWQ:**
+```bash
+uvicorn app_awq:app --host 0.0.0.0 --port 8000
+```
+
+## Running Benchmarks
 
 ```bash
-uvicorn app:app --host 0.0.0.0 --port 8000
+python benchmark.py --backend hf --concurrency 1 --num_requests 20 --max_new_tokens 200
+python benchmark.py --backend vllm --concurrency 10 --num_requests 50 --max_new_tokens 200
+python benchmark.py --backend awq --concurrency 10 --num_requests 50 --max_new_tokens 200
 ```
+
+Results saved to `results_<backend>_c<concurrency>_<timestamp>.json`
+
+## Key Concepts
+
+- **Continuous batching** — vLLM fills freed batch slots immediately, keeping GPU saturated
+- **PagedAttention** — KV cache stored in fixed-size pages, eliminates fragmentation
+- **AWQ** — activation-aware weight quantization, 4-bit weights with minimal quality loss
+- **KV cache** — stores previous K/V vectors so decode steps don't recompute attention
+- **Decode is memory-bandwidth bound** — GPU-Util looks low but HBM is busy streaming KV cache

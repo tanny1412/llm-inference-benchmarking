@@ -1,0 +1,76 @@
+# LLM Inference Benchmarking — Project Guide
+
+## Project Goal
+
+Benchmark LLM inference across three stages, isolating one bottleneck per stage:
+1. Naive HuggingFace serving (baseline)
+2. vLLM (runtime/serving optimization)
+3. vLLM + AWQ 4-bit quantization (memory optimization)
+
+Model: `mistralai/Mistral-7B-Instruct-v0.1` on RunPod RTX 4090 (24GB VRAM)
+
+## Collaboration Rules
+
+- NEVER generate large amounts of code independently — ask questions first, build one piece at a time
+- Always ensure the user understands WHY before moving to the next piece
+- NEVER include "Co-Authored-By: Claude" or any mention of Claude in git commits
+
+## File Structure
+
+```
+app_hf.py        # Stage 1 — naive HuggingFace + FastAPI
+app_vllm.py      # Stage 2 — vLLM server (TODO)
+app_awq.py       # Stage 3 — vLLM + AWQ (TODO)
+benchmark.py     # concurrent benchmark harness using asyncio + aiohttp
+requirements.txt
+devlogs.md       # running dev log — bugs, decisions, observations
+README.md        # project overview
+```
+
+## Current Status
+
+- [x] Stage 1 server (`app_hf.py`) — HF model loaded, FastAPI endpoint working
+- [x] Benchmark harness (`benchmark.py`) — asyncio + aiohttp, p50/p99, tokens/sec, req/sec
+- [ ] Add threading.Lock to `app_hf.py` — model.generate() is not thread-safe
+- [ ] Stage 2 — vLLM server
+- [ ] Stage 3 — AWQ quantization
+- [ ] Results tables
+
+## Key Design Decisions
+
+- Separate `app_hf.py`, `app_vllm.py`, `app_awq.py` — never overwrite, always compare
+- `benchmark.py` is backend-agnostic — same script for all three stages
+- `max_new_tokens` is configurable and must stay constant across benchmark runs
+- Results saved to JSON with backend + concurrency in filename
+- HuggingFace cache at `/workspace/hf-cache` on RunPod network volume
+
+## RunPod Setup (every pod restart)
+
+```bash
+cd /workspace/llm-inference-benchmarking
+git pull
+export HF_HOME=/workspace/hf-cache
+uvicorn app_hf:app --host 0.0.0.0 --port 8000
+```
+
+SSH config (update IP/port after each restart):
+```
+Host runpod
+    HostName <pod-ip>
+    User root
+    Port <pod-port>
+    IdentityFile ~/.ssh/id_ed25519
+```
+
+## Benchmark Command
+
+```bash
+python benchmark.py --backend hf --concurrency 1 --num_requests 20 --max_new_tokens 200
+```
+
+## Metrics
+
+- `latency_p50_s` — median request latency
+- `latency_p99_s` — 99th percentile latency (worst-case user experience)
+- `tokens_per_sec` — total tokens generated / total wall time
+- `requests_per_sec` — requests completed / total wall time

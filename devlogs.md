@@ -230,7 +230,7 @@ Results with sync `LLM` at concurrency=10:
 - Tokens/sec: 34.18 (identical to concurrency=1 — no throughput gain)
 - Req/sec: 0.20 (identical — same ceiling as HF)
 
-**Fix: switch to `AsyncLLMEngine`**
+**Fix: switch to `AsyncLLMEngine` with correct imports and batching config**
 
 With `LLM` (sync): FastAPI runs endpoint in a thread pool. 10 threads each independently call `llm.generate()` and block. Engine never sees them together.
 
@@ -239,6 +239,30 @@ With `AsyncLLMEngine` (async): FastAPI runs endpoint in the event loop. 10 corou
 `AsyncLLMEngine.generate()` is a streaming API — it yields tokens as they're generated. The endpoint consumes the stream and returns the final output.
 
 Key change: endpoint becomes `async def`, uses `await engine.generate()`, collects streamed output.
+
+**Additional fixes for vLLM 0.20.x:**
+- `AsyncEngineArgs` must be imported directly from `vllm`, not from `vllm.engine.arg_utils` — wrong import path causes silent fallback to sequential processing
+- `max_num_seqs=256` — explicitly tells vLLM to batch up to 256 concurrent sequences (default is too conservative)
+- `max_num_batched_tokens=8192` — allows larger batches per forward pass
+
+**Why `final_output = None` before the async for loop:**
+
+`engine.generate()` is a streaming API — it yields a partial output object after every new token generated, not the full response at the end. Each yielded object contains only the tokens generated so far.
+
+```python
+final_output = None
+async for output in engine.generate(prompt, params, request_id):
+    final_output = output  # overwrites on every token
+response = final_output.outputs[0].text  # last output = full completed text
+```
+
+We initialize to `None` so Python doesn't throw `NameError` when accessing `final_output` after the loop. We keep overwriting it so that when the loop ends (all 200 tokens done), we have the final output object with the complete text.
+
+**Why `None` specifically and not just leaving it uninitialized:**
+
+Python only knows a variable exists if it was assigned before you use it. If the `async for` loop ran zero iterations (empty generator), `final_output` would never get assigned — then `final_output.outputs[0].text` would reference a variable that doesn't exist → `NameError`. In practice the generator always yields at least one output, but Python doesn't know that at parse time. Initializing to `None` guarantees the variable always exists after the loop.
+
+**General Python rule:** If a variable is assigned inside a loop and used after the loop, initialize it beforehand.
 
 ---
 

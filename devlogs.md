@@ -569,6 +569,46 @@ Every one of those steps is an engineering problem. This is what determines real
 
 ---
 
+## Benchmark Results — Stage 5 (GPTQ Marlin)
+
+Same model weights as GPTQ (`TheBloke/Mistral-7B-Instruct-v0.1-GPTQ`), different kernel (`--quantization gptq_marlin`).
+
+| Concurrency | p50 latency | p99 latency | Tokens/sec | Req/sec | GPU Memory |
+|-------------|-------------|-------------|------------|---------|------------|
+| 1           | 1.284s      | 1.333s      | 125.81     | 0.77    | 19,032 MiB |
+| 10          | 1.515s      | 1.578s      | 1,068.90   | 6.54    | 19,032 MiB |
+| 50          | 3.362s      | 3.403s      | 2,537.04   | 15.57   | 19,162 MiB |
+| 100         | 5.273s      | 5.404s      | 3,023.39   | 18.73   | 19,358 MiB |
+
+**Full quantization comparison — all three methods:**
+
+| Concurrency | GPTQ | AWQ | GPTQ Marlin |
+|-------------|------|-----|-------------|
+| 1           | **140.30** tok/s | 117.93 tok/s | 125.81 tok/s |
+| 10          | 807.18 tok/s | 899.53 tok/s | **1,068.90** tok/s |
+| 50          | 1,014.76 tok/s | 2,157.86 tok/s | **2,537.04** tok/s |
+| 100         | 1,718.31 tok/s | 2,511.52 tok/s | **3,023.39** tok/s |
+
+**What this proves:**
+
+GPTQ and GPTQ Marlin use identical 4-bit weights. The only difference is the CUDA kernel. At c=100:
+- GPTQ: 1,718 tok/s
+- GPTQ Marlin: 3,023 tok/s
+- **Same weights, 1.76x throughput from kernel engineering alone**
+
+GPTQ Marlin also beats AWQ at scale (3,023 vs 2,511 tok/s at c=100, 1.2x faster). Marlin is specifically optimized for Ampere/Ada tensor cores — better tiling, better batched dequantization, better warp scheduling.
+
+At c=1, all three are similar (125–140 tok/s). Single-request is memory-bandwidth bound and the kernel complexity advantage disappears — small matrices, simple execution path, all kernels perform similarly.
+
+**The experiment confirmed the kernel engineering thesis directly:**
+- GPTQ (weak kernel): scales poorly, collapses at high concurrency
+- AWQ (optimized kernel): scales well
+- GPTQ Marlin (optimized GPTQ kernel): scales best — better than AWQ at c≥10
+
+The difference between GPTQ and GPTQ Marlin is not the algorithm. Not the weights. Not the quantization math. It is purely the quality of the CUDA program that runs the math. That is the central lesson of ML inference engineering.
+
+---
+
 ## Key Decisions
 
 - Model: `mistralai/Mistral-7B-Instruct-v0.1` (instruction-tuned, not base — responds coherently without fine-tuning)

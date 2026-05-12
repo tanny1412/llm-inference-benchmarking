@@ -12,6 +12,7 @@ Each stage isolates one bottleneck and fixes it:
 | 2 | vLLM | FP16 | Runtime optimization — continuous batching, PagedAttention, concurrency scaling |
 | 3 | vLLM + AWQ | 4-bit | Memory optimization — activation-aware quantization, VRAM vs throughput tradeoff |
 | 4 | vLLM + GPTQ | 4-bit | Quantization comparison — Hessian-based vs activation-aware, AWQ vs GPTQ |
+| 5 | vLLM + GPTQ Marlin | 4-bit | Kernel engineering — same weights as GPTQ, optimized kernel, proves implementation dominates |
 
 ## Model
 
@@ -105,12 +106,18 @@ Results saved to `results_<backend>_c<concurrency>_<timestamp>.json`
 | GPTQ 4-bit | 10 | 1.986s | 2.013s | 807.18 | 5.02 | 19,540 MiB |
 | GPTQ 4-bit | 50 | 8.181s | 8.463s | 1,014.76 | 6.31 | 19,764 MiB |
 | GPTQ 4-bit | 100 | 9.341s | 9.587s | 1,718.31 | 10.57 | 19,764 MiB |
+| GPTQ Marlin | 1 | 1.284s | 1.333s | 125.81 | 0.77 | 19,032 MiB |
+| GPTQ Marlin | 10 | 1.515s | 1.578s | 1,068.90 | 6.54 | 19,032 MiB |
+| GPTQ Marlin | 50 | 3.362s | 3.403s | 2,537.04 | 15.57 | 19,162 MiB |
+| GPTQ Marlin | 100 | 5.273s | 5.404s | 3,023.39 | 18.73 | 19,358 MiB |
 
 **Stage 1 → Stage 2:** 80x throughput improvement at concurrency=100. HF flat-lines; vLLM scales. p50 latency at 100 concurrent users (6.2s) is only 20% worse than HF at 1 user (5.1s).
 
-**Stage 2 → Stage 3:** AWQ is 2.4x faster at low concurrency (single request: 117 vs 49 tokens/sec). 4-bit weights stream from HBM faster — decode is memory-bandwidth bound, so smaller weights = faster tokens. At concurrency=100, the gap closes as both hit the same compute ceiling.
+**Stage 2 → Stage 3:** AWQ is 2.4x faster at low concurrency (single request: 117 vs 49 tokens/sec). 4-bit weights stream from HBM faster — decode is memory-bandwidth bound, so smaller weights = faster tokens.
 
-**Stage 3 vs Stage 4 (AWQ vs GPTQ):** GPTQ edges AWQ at c=1 (140 vs 117 tok/s) but falls behind sharply at scale — at c=50, AWQ is 2x faster (2,157 vs 1,014 tok/s). vLLM's GPTQ kernel is not optimized for large batches (vLLM warns this at startup). AWQ's kernel scales; GPTQ's doesn't.
+**Stage 3 vs Stage 4 (AWQ vs GPTQ):** GPTQ edges AWQ at c=1 (140 vs 117 tok/s) but falls behind sharply at scale — at c=50, AWQ is 2x faster. vLLM's GPTQ kernel is not optimized for large batches.
+
+**Stage 4 vs Stage 5 (GPTQ vs GPTQ Marlin):** Same weights, different kernel. At c=100: 1,718 vs 3,023 tok/s — **1.76x from kernel engineering alone**. Marlin also beats AWQ at scale (3,023 vs 2,511 tok/s). This proves that inference performance is often determined by kernel implementation quality, not the quantization algorithm itself.
 
 ## Key Concepts
 

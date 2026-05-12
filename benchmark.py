@@ -86,7 +86,7 @@ def main():
 
     print(f"\nBenchmarking: backend={args.backend}, concurrency={args.concurrency}, num_requests={args.num_requests}, max_new_tokens={args.max_new_tokens}")
 
-    if args.backend in ("vllm", "awq", "gptq"):
+    if args.backend in ("vllm", "awq", "gptq", "gptq_marlin"):
         args.url = "http://localhost:8000/v1/completions"
 
     results = asyncio.run(run_benchmark(args.url, args.concurrency, args.num_requests, args.max_new_tokens, args.backend))

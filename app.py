@@ -27,11 +27,12 @@ app = FastAPI(lifespan=lifespan)
 
 class GenerateRequest(BaseModel):
     prompt: str
+    max_new_tokens: int = 200
 
 
 @app.post("/generate")
 def generate(request: GenerateRequest):
     inputs = tokenizer(request.prompt, return_tensors="pt").to("cuda")
-    outputs = model.generate(**inputs, max_new_tokens=200)
+    outputs = model.generate(**inputs, max_new_tokens=request.max_new_tokens)
     response = tokenizer.decode(outputs[0], skip_special_tokens=True)
     return {"response": response}

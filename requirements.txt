@@ -4,3 +4,4 @@ accelerate
 huggingface_hub
 fastapi
 uvicorn
+aiohttp

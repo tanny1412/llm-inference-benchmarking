@@ -16,6 +16,7 @@ async def lifespan(app: FastAPI):
         model=MODEL_NAME,
         quantization="gptq",
         dtype="float16",
+        download_dir="/workspace/hf-cache/hub",
         gpu_memory_utilization=0.9,
         max_num_seqs=256,
         max_model_len=8192,

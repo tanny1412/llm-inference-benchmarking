@@ -83,18 +83,22 @@ Results saved to `results_<backend>_c<concurrency>_<timestamp>.json`
 
 ## Results
 
-### Stage 1 vs Stage 2
+| Backend | Concurrency | p50 latency | p99 latency | Tokens/sec | Req/sec | GPU Memory |
+|---------|-------------|-------------|-------------|------------|---------|------------|
+| HF naive | 1 | 5.148s | 5.148s | 32.55 | 0.19 | 14,466 MiB |
+| HF naive | 5 | 25.792s | 25.792s | 32.76 | 0.19 | 14,466 MiB |
+| vLLM FP16 | 1 | 3.304s | 3.330s | 49.60 | 0.30 | 19,472 MiB |
+| vLLM FP16 | 10 | 3.611s | 3.632s | 444.60 | 2.76 | 19,472 MiB |
+| vLLM FP16 | 50 | 4.747s | 4.753s | 1,714.23 | 10.56 | 19,472 MiB |
+| vLLM FP16 | 100 | 6.241s | 6.246s | 2,596.58 | 16.01 | 19,472 MiB |
+| AWQ 4-bit | 1 | 1.358s | 1.421s | 117.93 | 0.73 | 19,262 MiB |
+| AWQ 4-bit | 10 | 1.773s | 1.816s | 899.53 | 5.62 | 19,342 MiB |
+| AWQ 4-bit | 50 | 3.793s | 3.844s | 2,157.86 | 13.31 | 19,566 MiB |
+| AWQ 4-bit | 100 | 6.485s | 6.489s | 2,511.52 | 15.41 | 19,636 MiB |
 
-| Backend | Concurrency | p50 latency | Tokens/sec | Req/sec |
-|---------|-------------|-------------|------------|---------|
-| HF naive | 1 | 5.148s | 32.55 | 0.19 |
-| HF naive | 5 | 25.792s | 32.76 | 0.19 |
-| vLLM | 1 | 3.304s | 49.60 | 0.30 |
-| vLLM | 10 | 3.611s | 444.60 | 2.76 |
-| vLLM | 50 | 4.747s | 1714.23 | 10.56 |
-| vLLM | 100 | 6.241s | 2596.58 | 16.01 |
+**Stage 1 → Stage 2:** 80x throughput improvement at concurrency=100. HF flat-lines; vLLM scales. p50 latency at 100 concurrent users (6.2s) is only 20% worse than HF at 1 user (5.1s).
 
-**80x throughput improvement** at concurrency=100. HF flat-lines; vLLM scales. p50 latency at 100 concurrent users (6.2s) is only 20% worse than HF at 1 user (5.1s).
+**Stage 2 → Stage 3:** AWQ is 2.4x faster at low concurrency (single request: 117 vs 49 tokens/sec). 4-bit weights stream from HBM faster — decode is memory-bandwidth bound, so smaller weights = faster tokens. At concurrency=100, the gap closes: both backends approach the same compute ceiling and dequantization overhead erodes AWQ's bandwidth advantage.
 
 ## Key Concepts
 

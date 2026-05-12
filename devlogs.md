@@ -244,6 +244,72 @@ pip install transformers==4.45.2
 
 ---
 
+## Benchmark Results — Stage 3 (AWQ)
+
+| Concurrency | p50 latency | p99 latency | Tokens/sec | Req/sec | GPU Memory |
+|-------------|-------------|-------------|------------|---------|------------|
+| 1           | 1.358s      | 1.421s      | 117.93     | 0.73    | 19,262 MiB |
+| 10          | 1.773s      | 1.816s      | 899.53     | 5.62    | 19,342 MiB |
+| 50          | 3.793s      | 3.844s      | 2157.86    | 13.31   | 19,566 MiB |
+| 100         | 6.485s      | 6.489s      | 2511.52    | 15.41   | 19,636 MiB |
+
+**Model weight footprint (disk = VRAM footprint for weights):**
+
+| Model | Size |
+|-------|------|
+| Mistral 7B FP16 | 14 GB |
+| Mistral 7B AWQ 4-bit | 3.9 GB |
+
+3.6x smaller. 16-bit weights compressed to 4-bit. The freed VRAM goes to KV cache, allowing vLLM to hold more concurrent sequences.
+
+`nvidia-smi` total usage looks the same (~19GB) for both because vLLM pre-allocates 90% of VRAM regardless of model size. The difference is in how that VRAM is split: FP16 uses 14GB for weights + 5GB for KV cache, AWQ uses 4GB for weights + 15GB for KV cache. More KV cache = larger batches at high concurrency.
+
+**Concurrency=1 comparison across all stages:**
+
+| Backend | p50 | Tokens/sec | Model size |
+|---------|-----|------------|------------|
+| HF FP16 | 5.148s | 32.55 | 14 GB |
+| vLLM FP16 | 3.304s | 49.60 | 14 GB |
+| AWQ 4-bit | 1.358s | 117.93 | 3.9 GB |
+
+AWQ is 2.4x faster than vLLM FP16 at single request — 4-bit weights are smaller → less data streamed from HBM per decode step → faster token generation even before batching kicks in.
+
+**Full three-stage comparison at all concurrency levels:**
+
+| Backend | Concurrency | p50 | p99 | Tokens/sec | Req/sec | GPU Memory |
+|---------|-------------|-----|-----|------------|---------|------------|
+| HF FP16 | 1 | 5.148s | 5.148s | 32.55 | 0.19 | 14,466 MiB |
+| HF FP16 | 5 | 25.792s | 25.792s | 32.76 | 0.19 | 14,466 MiB |
+| vLLM FP16 | 1 | 3.304s | 3.330s | 49.60 | 0.30 | 19,472 MiB |
+| vLLM FP16 | 10 | 3.611s | 3.632s | 444.60 | 2.76 | 19,472 MiB |
+| vLLM FP16 | 50 | 4.747s | 4.753s | 1,714.23 | 10.56 | 19,472 MiB |
+| vLLM FP16 | 100 | 6.241s | 6.246s | 2,596.58 | 16.01 | 19,472 MiB |
+| AWQ 4-bit | 1 | 1.358s | 1.421s | 117.93 | 0.73 | 19,262 MiB |
+| AWQ 4-bit | 10 | 1.773s | 1.816s | 899.53 | 5.62 | 19,342 MiB |
+| AWQ 4-bit | 50 | 3.793s | 3.844s | 2,157.86 | 13.31 | 19,566 MiB |
+| AWQ 4-bit | 100 | 6.485s | 6.489s | 2,511.52 | 15.41 | 19,636 MiB |
+
+**AWQ vs vLLM FP16 — key observations:**
+
+At low concurrency (c=1, c=10), AWQ wins clearly:
+- c=1: AWQ 117.93 tokens/sec vs vLLM 49.60 — **2.4x faster**
+- c=10: AWQ 899.53 tokens/sec vs vLLM 444.60 — **2.0x faster**
+
+Why: AWQ 4-bit weights are 3.5x smaller → HBM streams less data per decode step. Decode is memory-bandwidth bound, so weight size directly determines token generation speed. Single-request performance is a pure test of per-step HBM bandwidth efficiency.
+
+At high concurrency (c=50, c=100), the gap closes:
+- c=50: AWQ 2,157 vs vLLM 1,714 — **1.26x faster**
+- c=100: AWQ 2,511 vs vLLM 2,596 — **vLLM slightly ahead**
+
+Why: at saturation, dequantization overhead starts to matter. AWQ stores weights at 4-bit but must dequantize them to float16 before each matmul — this is a small overhead per step. At c=1, this overhead is negligible compared to the bandwidth savings. At c=100, the batch size is large enough that the dequantization cost becomes meaningful, and both backends are hitting the same fundamental GPU compute ceiling. The GPU is fully saturated with work regardless — AWQ's bandwidth advantage shrinks as compute becomes the bottleneck instead of bandwidth.
+
+**Key takeaway per stage:**
+- Stage 1 → Stage 2: throughput 80x at high concurrency. Continuous batching and PagedAttention let the GPU handle concurrent requests together instead of sequentially. Latency barely changes (6.2s vs 5.1s) despite 100x the load.
+- Stage 2 → Stage 3: bandwidth efficiency 2–2.4x at low concurrency. 4-bit weights stream faster from HBM. The benefit is most visible where a single request has full GPU attention — with no batching to amortize costs, every saved HBM read directly speeds up the user.
+- At saturation: both vLLM FP16 and AWQ converge toward the same GPU compute ceiling. Quantization is a memory trick, not a compute trick — once you're compute-bound, it stops helping.
+
+---
+
 ## Benchmark Results — Stage 2 (vLLM)
 
 | Concurrency | p50 latency | p99 latency | Tokens/sec | Req/sec |
@@ -284,6 +350,8 @@ The earlier "identical" numbers (34 tokens/sec) were from the broken AsyncLLMEng
 | vLLM FP16 | 19,472 MiB |
 
 vLLM uses more memory than HF because it pre-allocates KV cache pages upfront (`gpu_memory_utilization=0.9` × 24GB = ~21GB total, model takes 14GB, rest goes to pre-allocated KV cache). HF only allocates memory per request on demand.
+
+`gpu_memory_utilization=0.9` is vLLM's default — we never set it explicitly. Running `vllm serve` without specifying it automatically reserves 90% of GPU VRAM for model weights + pre-allocated KV cache pages.
 
 **Key takeaways:**
 - HF flat-lines: adding concurrency kills latency, throughput never improves
@@ -380,6 +448,38 @@ vllm serve mistralai/Mistral-7B-Instruct-v0.1 --host 0.0.0.0 --port 8000 --token
 ```
 
 **General lesson:** When using multiple tools with the same model, always verify they're reading from the same cache location — otherwise you end up with duplicate downloads and wasted disk space.
+
+---
+
+## Bug: AWQ requires float16, not bfloat16
+
+```
+ValueError: torch.bfloat16 is not supported for quantization method awq. Supported dtypes: [torch.float16]
+```
+
+vLLM defaulted to bfloat16 because `TheBloke/Mistral-7B-Instruct-v0.1-AWQ`'s `config.json` specifies `torch_dtype: bfloat16`. vLLM reads that and uses it as the default when `--dtype` isn't passed explicitly.
+
+AWQ's kernel implementation only supports float16 — the mismatch causes the crash.
+
+**Fix:** add `--dtype float16` to the serve command:
+```bash
+vllm serve TheBloke/Mistral-7B-Instruct-v0.1-AWQ --host 0.0.0.0 --port 8000 --tokenizer-mode mistral --quantization awq --dtype float16 --download-dir /workspace/hf-cache/hub
+```
+
+**Note:** vLLM also detected the model can run with `awq_marlin` — a more optimized AWQ kernel for modern GPUs. We use `awq` first for the baseline, then can try `awq_marlin` for better performance.
+
+**Secondary bug: `--tokenizer-mode mistral` incompatible with TheBloke AWQ model**
+
+```
+OSError: Found 0 files matching the pattern: tokenizer.model.v.*|tekken.json
+```
+
+`--tokenizer-mode mistral` expects the newer Mistral tokenizer format (`tokenizer.model.v3` or `tekken.json`). But `TheBloke/Mistral-7B-Instruct-v0.1-AWQ` ships with the standard HuggingFace tokenizer (`tokenizer.model`) — the older format. The newer `--tokenizer-mode mistral` flag only works with official Mistral models that use their proprietary tokenizer format.
+
+**Fix:** remove `--tokenizer-mode mistral`. Final working command:
+```bash
+vllm serve TheBloke/Mistral-7B-Instruct-v0.1-AWQ --host 0.0.0.0 --port 8000 --quantization awq --dtype float16 --download-dir /workspace/hf-cache/hub
+```
 
 ---
 

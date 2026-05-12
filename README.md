@@ -144,6 +144,14 @@ HF naive      ▎                           32 tok/s
 
 ---
 
+## Future Work
+
+**TTFT vs TPOT** — current benchmark measures end-to-end request latency, which collapses two distinct phases. Time To First Token (prefill, compute-bound) is what the user waits before seeing anything. Time Per Output Token (decode, memory-bandwidth bound) is how fast text streams after that. Splitting these metrics would make the benchmark more production-realistic and expose tradeoffs that p50/p99 hides.
+
+**Speculative decoding** — uses a small draft model to predict multiple tokens speculatively, then verifies them in one forward pass of the large model. Attacks decode latency from a completely different angle than quantization — worth benchmarking against Marlin to see which approach wins on TPOT at various concurrency levels.
+
+**Tensor parallelism** — vLLM supports multi-GPU serving via `--tensor-parallel-size`. The interesting question is not whether throughput improves (it does) but by how much, and why it doesn't scale linearly — all-reduce communication overhead across GPUs is the bottleneck, the same systems reasoning this project applies to single-GPU kernels.
+
 ## File Structure
 
 ```

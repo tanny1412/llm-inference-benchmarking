@@ -4,6 +4,7 @@ import argparse
 import json
 import time
 import statistics
+import subprocess
 from datetime import datetime
 
 PROMPT = "Explain the difference between machine learning and deep learning in detail."
@@ -61,6 +62,14 @@ async def run_benchmark(url, concurrency, num_requests, max_new_tokens, backend)
     }
 
 
+def get_gpu_memory_mib():
+    result = subprocess.run(
+        ["nvidia-smi", "--query-gpu=memory.used", "--format=csv,noheader,nounits"],
+        capture_output=True, text=True
+    )
+    return int(result.stdout.strip())
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--url", default="http://localhost:8000/generate")
@@ -77,12 +86,16 @@ def main():
 
     results = asyncio.run(run_benchmark(args.url, args.concurrency, args.num_requests, args.max_new_tokens, args.backend))
 
+    gpu_mem = get_gpu_memory_mib()
+    results["gpu_memory_mib"] = gpu_mem
+
     print(f"\n--- Results ---")
     print(f"Latency p50:   {results['latency_p50_s']}s")
     print(f"Latency p99:   {results['latency_p99_s']}s")
     print(f"Tokens/sec:    {results['tokens_per_sec']}")
     print(f"Requests/sec:  {results['requests_per_sec']}")
     print(f"Total time:    {results['total_time_s']}s")
+    print(f"GPU memory:    {gpu_mem} MiB")
 
     filename = f"results_{args.backend}_c{args.concurrency}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
     with open(filename, "w") as f:

@@ -647,6 +647,37 @@ Marlin beats AWQ not because it skips dequantization — it doesn't — but beca
 
 ---
 
+## Quantization for Inference vs Training (LoRA / QLoRA)
+
+**This project used quantization for inference** — AWQ, GPTQ, Marlin. Weights frozen at 4-bit, goal is faster/cheaper serving.
+
+**For training, the equivalent is QLoRA.** Same 4-bit quantization trick but for a different purpose: making fine-tuning fit on smaller GPUs.
+
+**LoRA (Low-Rank Adaptation):** freeze the base model, inject small trainable adapter matrices `B` and `A` alongside the attention weight matrices (`W_q`, `W_k`, `W_v`, `W_o`). The forward pass becomes:
+
+```
+output = W·x + B·(A·x)
+```
+
+`W·x` is the frozen original. `B·A·x` is the adapter's contribution, summed on top. Both run every forward pass.
+
+`W` is `[d, d]`. `A` is `[r, d]`, `B` is `[d, r]`, where `r` is tiny (8, 16, 64). So you train `2×d×r` parameters instead of `d×d` — orders of magnitude fewer.
+
+**Why it works:** fine-tuning updates are empirically low-rank. Adapting a pretrained model to a task doesn't restructure what it knows — it makes small directional adjustments that live in a low-dimensional subspace. `BA` (rank-r matrix) approximates the true update `ΔW` well because `ΔW` is approximately low-rank.
+
+**Training:** only `B` and `A` have gradients. Save ~10-50MB of adapter weights instead of 14GB.
+
+**After training:** optionally merge `W_new = W + BA`. Same weight shape, zero inference overhead.
+
+**QLoRA = LoRA + quantization:** load base model in 4-bit (frozen), train adapters in float16. Adapters stay float16 — you can't train in 4-bit because gradients need precision. Only the frozen base is quantized.
+
+```
+Inference quantization  →  faster/cheaper serving, weights frozen
+QLoRA                   →  fine-tuning on consumer hardware, base frozen, adapters train
+```
+
+---
+
 ## Key Decisions
 
 - Model: `mistralai/Mistral-7B-Instruct-v0.1` (instruction-tuned, not base — responds coherently without fine-tuning)

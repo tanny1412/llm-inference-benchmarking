@@ -544,7 +544,28 @@ vLLM's startup log said it explicitly: *"gptq quantization is not fully optimize
 
 The crossover point is between c=1 and c=10. Below that, GPTQ's simpler kernel wins. Above it, AWQ's batch-optimized kernel takes over.
 
-**Note:** vLLM detected that `gptq_marlin` (a more optimized GPTQ kernel for Ampere/Ada GPUs) could have been used but we forced `--quantization gptq` explicitly. `gptq_marlin` would likely close most of the gap at high concurrency — it's essentially GPTQ with the AWQ-style batched kernel underneath. We used plain `gptq` to establish the baseline comparison.
+**The real lesson — it's not the algorithm, it's the kernel:**
+
+GPTQ and AWQ are both 4-bit quantization methods. In theory, both reduce memory traffic similarly and should benefit from batching similarly. Yet AWQ is 2x faster at scale. The reason is not the quantization math — it's the GPU kernel implementation quality.
+
+A GPU kernel is the low-level CUDA program that actually runs the math on the GPU. The ML algorithm (dequantize → matmul) is simple. The actual GPU execution is not:
+
+```
+load weights → dequantize → tile tensors → schedule warps
+→ shared memory movement → tensor core instructions → write outputs
+```
+
+Every one of those steps is an engineering problem. This is what determines real throughput.
+
+**Why GPTQ wins at c=1:** Small batch size, small matrices, simple execution path. Memory streaming efficiency dominates. GPTQ's kernel handles this well — low overhead, fast HBM reads, good single-request latency.
+
+**Why GPTQ falls apart at large batches:** As concurrency grows, batch sizes become huge. The GPU now wants massive tensor-core saturation, highly optimized tiling, efficient batched dequantization, and high warp occupancy. The GPTQ kernel in vLLM doesn't do this well. Tensor cores sit idle waiting for work — they're like giant factories that want continuous large matrix work, but the kernel feeds them inefficiently. Throughput collapses.
+
+**Why AWQ scales:** AWQ's kernel implementation in vLLM has better tiling, better batched dequantization fusion, and better tensor-core utilization. Same 4-bit math underneath — better kernel engineering on top.
+
+**Why Marlin matters:** vLLM warned at startup that `gptq_marlin` was available. Marlin is a much more optimized GPTQ CUDA kernel for Ampere/Ada GPUs (like the RTX 4090) — better batching, better tensor-core scheduling, better large-batch throughput. It would likely close most of the gap. We used plain `gptq` to establish the baseline.
+
+**Key insight from this experiment:** Real-world serving performance is often dominated by systems implementation quality, not theoretical algorithm design. Two methods with identical quantization math can differ 2x in throughput purely because of how well the CUDA kernel is written. This is one of the central lessons of ML infrastructure engineering.
 
 ---
 

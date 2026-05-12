@@ -203,21 +203,84 @@ We kept the same FastAPI wrapper across backends to ensure apples-to-apples benc
 
 ---
 
+## Bug: vLLM 0.20.2 CUDA Driver Incompatibility
+
+**Root cause of all sequential behavior:**
+
+```
+RuntimeError: The NVIDIA driver on your system is too old (found version 12040)
+```
+
+vLLM 0.20.2 uses the V1 engine internally which requires CUDA 12.6+. The RunPod RTX 4090 pod has CUDA 12.4 (driver version 12040). The V1 engine crashed on initialization.
+
+**Why our FastAPI wrapper appeared to work but didn't batch:**
+
+When `AsyncLLMEngine.from_engine_args()` was called, it tried to initialize the V1 engine under the hood — which crashed on the CUDA driver check. The crash was silent — our FastAPI server still responded to requests, but the actual vLLM engine never started. Requests were processed sequentially as a fallback, which is why we saw exactly 34 tokens/sec regardless of concurrency. The engine wasn't running at all.
+
+**This was not a FastAPI wrapping problem.** The wrapper code was correct. The engine underneath it never initialized.
+
+**Fix:** Pin vLLM to a version compatible with CUDA 12.4:
+```bash
+pip install vllm==0.6.6
+```
+
+vLLM 0.6.x uses the V0 engine which works with CUDA 12.1+.
+
+**Secondary bug: transformers 5.8.0 incompatible with vLLM 0.6.6**
+
+After downgrading vLLM, the next error was:
+```
+AttributeError: LlamaTokenizer has no attribute all_special_tokens_extended
+```
+
+vLLM 0.6.6 was built against transformers 4.x. The `all_special_tokens_extended` attribute was removed in transformers 5.x. The system had 5.8.0 installed.
+
+Fix: downgrade transformers to match vLLM 0.6.6:
+```bash
+pip install transformers==4.45.2
+```
+
+`transformers==4.45.2` still uses `torch_dtype` (not `dtype`), so `app_hf.py` remains compatible. Updated `requirements.txt` to pin both `transformers==4.45.2` and `vllm==0.6.6`.
+
+---
+
 ## Benchmark Results — Stage 2 (vLLM)
 
 | Concurrency | p50 latency | p99 latency | Tokens/sec | Req/sec |
 |-------------|-------------|-------------|------------|---------|
-| 1           | 4.986s      | 5.368s      | 34.11      | 0.20    |
+| 1           | 3.304s      | 3.330s      | 49.60      | 0.30    |
+| 10          | 3.611s      | 3.632s      | 444.60     | 2.76    |
+| 50          | 4.747s      | 4.753s      | 1714.23    | 10.56   |
+| 100         | 6.241s      | 6.246s      | 2596.58    | 16.01   |
 
-**Concurrency=1 comparison — HF vs vLLM:**
+**Concurrency=1 comparison — HF vs vLLM (correct results after fixing engine):**
 
 | | HF | vLLM |
 |--|--|--|
-| p50 | 5.148s | 4.986s |
-| Tokens/sec | 32.55 | 34.11 |
-| Req/sec | 0.19 | 0.20 |
+| p50 | 5.148s | 3.304s |
+| Tokens/sec | 32.55 | 49.60 |
+| Req/sec | 0.19 | 0.30 |
 
-Almost identical — because vLLM's power is handling multiple concurrent requests. With concurrency=1 there's nothing to batch. The scheduler, continuous batching, PagedAttention — none of it matters with a single request in the queue. It's just one forward pass, same as HF.
+Even at concurrency=1, vLLM is 1.5x faster. This is because vLLM uses kernel fusion, FlashAttention, and compiled CUDA graphs even for a single request — the engine itself is more efficient than raw HuggingFace regardless of batching.
+
+The earlier "identical" numbers (34 tokens/sec) were from the broken AsyncLLMEngine setup where the V1 engine never initialized. These numbers are the real baseline.
+
+**Full comparison — HF naive vs vLLM:**
+
+| Backend | Concurrency | p50 | Tokens/sec | Req/sec |
+|---------|-------------|-----|------------|---------|
+| HF naive | 1 | 5.148s | 32.55 | 0.19 |
+| HF naive | 5 | 25.792s | 32.76 | 0.19 |
+| vLLM | 1 | 3.304s | 49.60 | 0.30 |
+| vLLM | 10 | 3.611s | 444.60 | 2.76 |
+| vLLM | 50 | 4.747s | 1714.23 | 10.56 |
+| vLLM | 100 | 6.241s | 2596.58 | 16.01 |
+
+**Key takeaways:**
+- HF flat-lines: adding concurrency kills latency, throughput never improves
+- vLLM scales: 100 concurrent users, 80x throughput improvement (32 → 2596 tokens/sec), 84x more req/sec (0.19 → 16)
+- vLLM p50 latency at 100 concurrent users (6.2s) is only 20% worse than HF at 1 user (5.1s) — despite 100x the load
+- This is continuous batching + PagedAttention + kernel fusion working together
 
 The real improvement shows at higher concurrency (10, 50, 100).
 

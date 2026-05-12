@@ -63,7 +63,7 @@ uvicorn app_hf:app --host 0.0.0.0 --port 8000
 
 **Stage 2 — vLLM:**
 ```bash
-uvicorn app_vllm:app --host 0.0.0.0 --port 8000
+vllm serve mistralai/Mistral-7B-Instruct-v0.1 --host 0.0.0.0 --port 8000 --tokenizer-mode mistral
 ```
 
 **Stage 3 — AWQ:**
@@ -80,6 +80,21 @@ python benchmark.py --backend awq --concurrency 10 --num_requests 50 --max_new_t
 ```
 
 Results saved to `results_<backend>_c<concurrency>_<timestamp>.json`
+
+## Results
+
+### Stage 1 vs Stage 2
+
+| Backend | Concurrency | p50 latency | Tokens/sec | Req/sec |
+|---------|-------------|-------------|------------|---------|
+| HF naive | 1 | 5.148s | 32.55 | 0.19 |
+| HF naive | 5 | 25.792s | 32.76 | 0.19 |
+| vLLM | 1 | 3.304s | 49.60 | 0.30 |
+| vLLM | 10 | 3.611s | 444.60 | 2.76 |
+| vLLM | 50 | 4.747s | 1714.23 | 10.56 |
+| vLLM | 100 | 6.241s | 2596.58 | 16.01 |
+
+**80x throughput improvement** at concurrency=100. HF flat-lines; vLLM scales. p50 latency at 100 concurrent users (6.2s) is only 20% worse than HF at 1 user (5.1s).
 
 ## Key Concepts
 

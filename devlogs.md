@@ -303,6 +303,24 @@ At high concurrency (c=50, c=100), the gap closes:
 
 Why: at saturation, dequantization overhead starts to matter. AWQ stores weights at 4-bit but must dequantize them to float16 before each matmul — this is a small overhead per step. At c=1, this overhead is negligible compared to the bandwidth savings. At c=100, the batch size is large enough that the dequantization cost becomes meaningful, and both backends are hitting the same fundamental GPU compute ceiling. The GPU is fully saturated with work regardless — AWQ's bandwidth advantage shrinks as compute becomes the bottleneck instead of bandwidth.
 
+**Why AWQ gets worse numbers at high concurrency:**
+
+At low concurrency, AWQ wins because decode is memory-bandwidth bound — 4-bit weights are smaller, HBM streams them faster, each token comes out quicker.
+
+But AWQ has to do something FP16 doesn't: **dequantize before every matmul**. The GPU can't multiply 4-bit × 16-bit. AWQ kernels convert weights from 4-bit → float16 on the fly, then do the matmul in float16. That dequantization is extra work per forward pass.
+
+At c=1: bandwidth savings dwarf the dequantization cost. Streaming 3.5x less data from HBM wins easily.
+
+At c=100: the regime shifts. Massive batch — 100 sequences, thousands of tokens per forward pass. The matmuls are huge. Tensor cores are fully saturated doing compute. The bottleneck is no longer how fast you stream weights from HBM — it's how fast you run the matmul.
+
+In that compute-bound regime:
+- FP16: stream weights → matmul
+- AWQ: stream weights → **dequantize** → matmul
+
+Both hit the same compute ceiling, but AWQ pays a dequantization tax to get there. That's why at c=100, vLLM FP16 (2,596 tok/s) edges out AWQ (2,511 tok/s).
+
+**One-line mental model: AWQ is a bandwidth trick, not a compute trick. Once you're compute-bound, the bandwidth savings stop mattering and the dequantization cost starts showing.**
+
 **Key takeaway per stage:**
 - Stage 1 → Stage 2: throughput 80x at high concurrency. Continuous batching and PagedAttention let the GPU handle concurrent requests together instead of sequentially. Latency barely changes (6.2s vs 5.1s) despite 100x the load.
 - Stage 2 → Stage 3: bandwidth efficiency 2–2.4x at low concurrency. 4-bit weights stream faster from HBM. The benefit is most visible where a single request has full GPU attention — with no batching to amortize costs, every saved HBM read directly speeds up the user.

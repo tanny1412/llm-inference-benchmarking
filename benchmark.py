@@ -76,7 +76,7 @@ def get_gpu_memory_mib():
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--url", default="http://localhost:8000/generate")
-    parser.add_argument("--backend", default="hf", help="hf | vllm | awq")
+    parser.add_argument("--backend", default="hf", help="hf | vllm | awq | gptq")
     parser.add_argument("--concurrency", type=int, default=10)
     parser.add_argument("--num_requests", type=int, default=50)
     parser.add_argument("--max_new_tokens", type=int, default=200)

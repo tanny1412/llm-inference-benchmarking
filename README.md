@@ -10,7 +10,8 @@ Each stage isolates one bottleneck and fixes it:
 |-------|--------|-----------|---------------|
 | 1 | Naive HuggingFace + FastAPI | FP16 | Baseline — naive serving limitations, sequential request handling |
 | 2 | vLLM | FP16 | Runtime optimization — continuous batching, PagedAttention, concurrency scaling |
-| 3 | vLLM + AWQ | 4-bit | Memory optimization — quantization effect on VRAM, throughput, quality |
+| 3 | vLLM + AWQ | 4-bit | Memory optimization — activation-aware quantization, VRAM vs throughput tradeoff |
+| 4 | vLLM + GPTQ | 4-bit | Quantization comparison — Hessian-based vs activation-aware, AWQ vs GPTQ |
 
 ## Model
 
@@ -39,7 +40,7 @@ Each stage isolates one bottleneck and fixes it:
 ```
 app_hf.py        # Stage 1 — naive HuggingFace + FastAPI server
 app_vllm.py      # Stage 2 — vLLM server
-app_awq.py       # Stage 3 — vLLM + AWQ quantized server
+app_gptq.py      # Stage 4 — vLLM + GPTQ quantized server
 benchmark.py     # benchmark harness (same for all stages)
 requirements.txt
 devlogs.md       # detailed dev notes, bugs, observations
@@ -68,7 +69,12 @@ vllm serve mistralai/Mistral-7B-Instruct-v0.1 --host 0.0.0.0 --port 8000 --token
 
 **Stage 3 — AWQ:**
 ```bash
-uvicorn app_awq:app --host 0.0.0.0 --port 8000
+vllm serve TheBloke/Mistral-7B-Instruct-v0.1-AWQ --host 0.0.0.0 --port 8000 --quantization awq --dtype float16 --download-dir /workspace/hf-cache/hub
+```
+
+**Stage 4 — GPTQ:**
+```bash
+uvicorn app_gptq:app --host 0.0.0.0 --port 8000
 ```
 
 ## Running Benchmarks
